@@ -1,4 +1,4 @@
-name: MinerU
+name: simplemarkdown
 channels:
   - conda-forge
   - defaults

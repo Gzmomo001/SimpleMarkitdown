@@ -7,6 +7,7 @@ import shutil
 import platform
 import hashlib
 import json
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -139,13 +140,16 @@ def check_libreoffice_installed():
     
     return False, None
 
-def convert_office_to_pdf(office_file, output_dir="tmp_pdf"):
+def convert_office_to_pdf(office_file, output_dir="tmp_pdf", hash_db=None, hash_db_path=None, source_dir=None):
     """
     将Office文件(doc, docx, ppt, pptx)转换为PDF文件
     
     Args:
         office_file: Office文件路径
         output_dir: 输出PDF文件的目录
+        hash_db: 哈希值数据库
+        hash_db_path: 哈希值数据库文件路径
+        source_dir: 源文件目录，用于计算相对路径
     
     Returns:
         转换后的PDF文件路径，如果转换失败则返回None
@@ -171,6 +175,116 @@ def convert_office_to_pdf(office_file, output_dir="tmp_pdf"):
     # 输出PDF文件路径
     pdf_file = os.path.join(output_dir, f"{name_without_ext}.pdf")
     
+    # 计算源文件的哈希值
+    current_hash = calculate_file_hash(office_file)
+    if current_hash is None:
+        print(f"无法计算文件哈希值，将继续处理: {file_name}")
+    
+    # 使用规范化的相对路径作为键
+    if source_dir:
+        try:
+            # 确保使用规范化的路径
+            office_file_abs = os.path.abspath(office_file)
+            source_dir_abs = os.path.abspath(source_dir)
+            if office_file_abs.startswith(source_dir_abs):
+                rel_path = os.path.relpath(office_file_abs, source_dir_abs)
+            else:
+                rel_path = office_file
+        except ValueError:
+            rel_path = office_file
+    else:
+        rel_path = office_file
+    
+    # 标准化路径分隔符，确保跨平台一致性
+    rel_path = rel_path.replace('\\', '/')
+    
+    # 检查哈希值是否存在且相同
+    if hash_db is not None and current_hash is not None:
+        print(f"检查文件哈希值: {rel_path}")
+        
+        # 检查所有可能的键
+        possible_keys = [
+            rel_path,
+            os.path.abspath(office_file),
+            os.path.abspath(office_file).replace('\\', '/'),
+            f"./{rel_path}",
+            office_file,
+            os.path.basename(office_file)
+        ]
+        
+        found_key = None
+        for key in possible_keys:
+            if key in hash_db:
+                found_key = key
+                break
+        
+        if found_key:
+            # 检查是否是新格式的哈希值记录（包含状态信息）
+            if isinstance(hash_db[found_key], dict):
+                hash_info = hash_db[found_key]
+                stored_hash = hash_info.get('hash')
+                conversion_status = hash_info.get('status', 'unknown')
+                print(f"找到已存在的哈希值记录: {stored_hash}, 状态: {conversion_status}")
+                
+                if stored_hash == current_hash:
+                    if conversion_status == 'success':
+                        # 如果之前成功转换过，且文件未更改，则跳过
+                        print(f"跳过未更改的文件: {file_name}")
+                        
+                        # 检查是否需要重新生成PDF文件
+                        if not os.path.exists(pdf_file):
+                            # 尝试推断可能的Markdown文件路径
+                            name_without_ext = os.path.splitext(file_name)[0]
+                            possible_md_paths = [
+                                os.path.join("md", f"{name_without_ext}.md"),
+                                os.path.join(os.getenv("OUTPUT_FOLDER", "md"), f"{name_without_ext}.md")
+                            ]
+                            
+                            # 检查任一可能的MD文件是否存在
+                            md_exists = False
+                            existing_md_path = None
+                            for md_path in possible_md_paths:
+                                if os.path.exists(md_path):
+                                    md_exists = True
+                                    existing_md_path = md_path
+                                    break
+                            
+                            if md_exists:
+                                print(f"PDF文件不存在，但找到MD文件: {existing_md_path}，无需重新转换: {file_name}")
+                                # 创建一个空的PDF文件作为占位符，避免下次再次转换
+                                try:
+                                    os.makedirs(os.path.dirname(pdf_file), exist_ok=True)
+                                    with open(pdf_file, 'w') as f:
+                                        f.write('')
+                                    print(f"已创建PDF占位符文件: {pdf_file}")
+                                except Exception as e:
+                                    print(f"创建PDF占位符文件失败: {str(e)}")
+                                return pdf_file
+                            else:
+                                print(f"PDF文件不存在，且未找到对应的MD文件，需要重新转换: {file_name}")
+                                # 继续执行转换
+                        else:
+                            return pdf_file
+                    else:
+                        print(f"文件未更改，但上次转换状态为 {conversion_status}，需要重新转换")
+                else:
+                    print(f"文件已更改，需要重新转换: {file_name}")
+            else:
+                # 旧格式的哈希值记录（仅包含哈希值）
+                stored_hash = hash_db[found_key]
+                print(f"找到已存在的哈希值记录(旧格式): {stored_hash}")
+                
+                if stored_hash == current_hash and os.path.exists(pdf_file):
+                    print(f"跳过未更改的文件: {file_name}")
+                    return pdf_file
+                else:
+                    if stored_hash != current_hash:
+                        print(f"文件已更改，需要重新转换: {file_name}")
+                    else:
+                        print(f"哈希值匹配但PDF文件不存在，需要重新转换: {file_name}")
+        else:
+            print(f"未找到文件的哈希值记录: {file_name}")
+    
     print(f"正在将 {file_name} 转换为PDF...")
     
     try:
@@ -191,12 +305,53 @@ def convert_office_to_pdf(office_file, output_dir="tmp_pdf"):
         # 检查PDF文件是否成功生成
         if os.path.exists(pdf_file):
             print(f"成功转换: {office_file} -> {pdf_file}")
+            # 保存哈希值和状态信息
+            if hash_db is not None and current_hash is not None:
+                # 使用新格式保存信息
+                hash_db[rel_path] = {
+                    'hash': current_hash,
+                    'status': 'success',
+                    'timestamp': time.time(),
+                    'output_file': pdf_file
+                }
+                
+                # 清理旧的键
+                for key in list(hash_db.keys()):
+                    if key != rel_path and (
+                        os.path.basename(key) == os.path.basename(rel_path) or
+                        (os.path.isabs(key) and os.path.abspath(key) == os.path.abspath(office_file))
+                    ):
+                        print(f"删除重复的哈希值记录: {key}")
+                        del hash_db[key]
+                
+                if hash_db_path:
+                    save_hash_database(hash_db, hash_db_path)
+                    print(f"已更新哈希值数据库: {rel_path}")
             return pdf_file
         else:
             print(f"转换失败: {office_file}")
+            # 记录失败状态
+            if hash_db is not None and current_hash is not None:
+                hash_db[rel_path] = {
+                    'hash': current_hash,
+                    'status': 'failed',
+                    'timestamp': time.time()
+                }
+                if hash_db_path:
+                    save_hash_database(hash_db, hash_db_path)
             return None
     except Exception as e:
         print(f"转换 {office_file} 时出错: {str(e)}")
+        # 记录错误状态
+        if hash_db is not None and current_hash is not None:
+            hash_db[rel_path] = {
+                'hash': current_hash,
+                'status': 'error',
+                'error': str(e),
+                'timestamp': time.time()
+            }
+            if hash_db_path:
+                save_hash_database(hash_db, hash_db_path)
         return None
 
 def convert_pdf_to_md(pdf_path, output_dir="md", image_dir="md/images", hash_db=None, hash_db_path=None):
@@ -217,6 +372,20 @@ def convert_pdf_to_md(pdf_path, output_dir="md", image_dir="md/images", hash_db=
     pdf_file_name = os.path.basename(pdf_path)
     name_without_suff = pdf_file_name.split(".")[0]
     
+    # 检查PDF文件是否为占位符（空文件）
+    try:
+        if os.path.exists(pdf_path) and os.path.getsize(pdf_path) == 0:
+            print(f"检测到PDF占位符文件，跳过处理: {pdf_file_name}")
+            # 检查对应的MD文件是否存在
+            md_file_path = os.path.join(output_dir, f"{name_without_suff}.md")
+            if os.path.exists(md_file_path):
+                print(f"找到对应的MD文件: {md_file_path}")
+                return True
+            else:
+                print(f"未找到对应的MD文件，将尝试重新生成: {md_file_path}")
+    except Exception as e:
+        print(f"检查PDF文件大小时出错: {str(e)}")
+    
     # 计算文件哈希值
     current_hash = calculate_file_hash(pdf_path)
     if current_hash is None:
@@ -224,12 +393,59 @@ def convert_pdf_to_md(pdf_path, output_dir="md", image_dir="md/images", hash_db=
     
     # 检查哈希值是否存在且相同
     if hash_db is not None and current_hash is not None:
-        if pdf_path in hash_db and hash_db[pdf_path] == current_hash:
-            # 检查MD文件是否存在
-            md_file_path = os.path.join(output_dir, f"{name_without_suff}.md")
-            if os.path.exists(md_file_path):
-                print(f"跳过未更改的文件: {pdf_file_name}")
-                return True
+        # 检查所有可能的键
+        possible_keys = [
+            pdf_path,
+            os.path.abspath(pdf_path),
+            os.path.abspath(pdf_path).replace('\\', '/'),
+            f"./{pdf_path}",
+            os.path.basename(pdf_path)
+        ]
+        
+        found_key = None
+        for key in possible_keys:
+            if key in hash_db:
+                found_key = key
+                break
+        
+        if found_key:
+            # 检查是否是新格式的哈希值记录（包含状态信息）
+            if isinstance(hash_db[found_key], dict):
+                hash_info = hash_db[found_key]
+                stored_hash = hash_info.get('hash')
+                conversion_status = hash_info.get('status', 'unknown')
+                print(f"找到已存在的哈希值记录: {stored_hash}, 状态: {conversion_status}")
+                
+                if stored_hash == current_hash:
+                    if conversion_status == 'success':
+                        # 检查MD文件是否存在
+                        md_file_path = os.path.join(output_dir, f"{name_without_suff}.md")
+                        if os.path.exists(md_file_path):
+                            print(f"跳过未更改的文件: {pdf_file_name}")
+                            return True
+                        else:
+                            print(f"MD文件不存在，但文件未更改，需要重新转换: {pdf_file_name}")
+                    else:
+                        print(f"文件未更改，但上次转换状态为 {conversion_status}，需要重新转换")
+                else:
+                    print(f"文件已更改，需要重新转换: {pdf_file_name}")
+            else:
+                # 旧格式的哈希值记录（仅包含哈希值）
+                stored_hash = hash_db[found_key]
+                print(f"找到已存在的哈希值记录(旧格式): {stored_hash}")
+                
+                if stored_hash == current_hash:
+                    # 检查MD文件是否存在
+                    md_file_path = os.path.join(output_dir, f"{name_without_suff}.md")
+                    if os.path.exists(md_file_path):
+                        print(f"跳过未更改的文件: {pdf_file_name}")
+                        return True
+                    else:
+                        print(f"MD文件不存在，但文件未更改，需要重新转换: {pdf_file_name}")
+                else:
+                    print(f"文件已更改，需要重新转换: {pdf_file_name}")
+        else:
+            print(f"未找到文件的哈希值记录: {pdf_file_name}")
     
     # 准备环境
     local_image_dir, local_md_dir = image_dir, output_dir
@@ -265,14 +481,33 @@ def convert_pdf_to_md(pdf_path, output_dir="md", image_dir="md/images", hash_db=
     
     # 保存哈希值
     if hash_db is not None and current_hash is not None:
-        hash_db[pdf_path] = current_hash
+        # 使用规范化的相对路径作为键
+        rel_path = pdf_path.replace('\\', '/')
+        
+        # 使用新格式保存信息
+        hash_db[rel_path] = {
+            'hash': current_hash,
+            'status': 'success',
+            'timestamp': time.time(),
+            'output_file': os.path.join(local_md_dir, f'{name_without_suff}.md')
+        }
+        
+        # 清理旧的键
+        for key in list(hash_db.keys()):
+            if key != rel_path and (
+                os.path.basename(key) == os.path.basename(rel_path) or
+                (os.path.isabs(key) and os.path.abspath(key) == os.path.abspath(pdf_path))
+            ):
+                print(f"删除重复的哈希值记录: {key}")
+                del hash_db[key]
+        
         if hash_db_path:
             save_hash_database(hash_db, hash_db_path)
     
     print(f"已完成转换: {pdf_file_name} -> {os.path.join(local_md_dir, f'{name_without_suff}.md')}")
     return True
 
-def batch_convert_files(source_dir="source", output_dir="md", image_dir="md/images", recursive=False, tmp_pdf_dir="tmp_pdf", hash_db_path=None):
+def batch_convert_files(source_dir="source", output_dir="md", image_dir="md/images", recursive=False, tmp_pdf_dir="tmp_pdf", hash_db_path=None, keep_tmp=False):
     """
     批量转换目录中的所有PDF和Office文件为Markdown文件
     
@@ -283,6 +518,7 @@ def batch_convert_files(source_dir="source", output_dir="md", image_dir="md/imag
         recursive: 是否递归处理子目录
         tmp_pdf_dir: 临时存放转换后PDF文件的目录
         hash_db_path: 哈希值数据库文件路径
+        keep_tmp: 是否保留临时PDF文件
     """
     # 确保目录存在
     os.makedirs(source_dir, exist_ok=True)
@@ -355,9 +591,20 @@ def batch_convert_files(source_dir="source", output_dir="md", image_dir="md/imag
             else:
                 current_tmp_pdf_dir = tmp_pdf_dir
             
-            pdf_file = convert_office_to_pdf(office_file, current_tmp_pdf_dir)
+            pdf_file = convert_office_to_pdf(office_file, current_tmp_pdf_dir, hash_db, hash_db_path, source_dir)
             if pdf_file:
-                converted_pdf_files.append(pdf_file)
+                # 检查返回的PDF文件是否是占位符（空文件）
+                is_placeholder = False
+                try:
+                    if os.path.exists(pdf_file) and os.path.getsize(pdf_file) == 0:
+                        is_placeholder = True
+                        print(f"检测到PDF占位符文件，跳过后续处理: {pdf_file}")
+                except Exception as e:
+                    print(f"检查PDF文件大小时出错: {str(e)}")
+                
+                # 只有非占位符的PDF文件才添加到转换列表中
+                if not is_placeholder:
+                    converted_pdf_files.append(pdf_file)
     
     # 合并所有PDF文件列表
     all_pdf_files = pdf_files + converted_pdf_files
@@ -397,10 +644,36 @@ def batch_convert_files(source_dir="source", output_dir="md", image_dir="md/imag
             result = convert_pdf_to_md(pdf_file, current_output_dir, current_image_dir, hash_db, hash_db_path)
             if result:
                 # 检查是否是因为文件未更改而跳过
-                if hash_db and pdf_file in hash_db:
-                    md_file_path = os.path.join(current_output_dir, f"{os.path.basename(pdf_file).split('.')[0]}.md")
-                    if os.path.exists(md_file_path):
-                        skipped_count += 1
+                if hash_db:
+                    # 检查所有可能的键
+                    possible_keys = [
+                        pdf_file,
+                        os.path.abspath(pdf_file),
+                        os.path.abspath(pdf_file).replace('\\', '/'),
+                        f"./{pdf_file}",
+                        os.path.basename(pdf_file),
+                        pdf_file.replace('\\', '/')
+                    ]
+                    
+                    found_key = None
+                    for key in possible_keys:
+                        if key in hash_db:
+                            found_key = key
+                            break
+                    
+                    if found_key:
+                        md_file_path = os.path.join(current_output_dir, f"{os.path.basename(pdf_file).split('.')[0]}.md")
+                        if os.path.exists(md_file_path):
+                            # 检查是否是新格式的哈希值记录
+                            if isinstance(hash_db[found_key], dict):
+                                if hash_db[found_key].get('status') == 'success':
+                                    skipped_count += 1
+                                else:
+                                    success_count += 1
+                            else:
+                                skipped_count += 1
+                        else:
+                            success_count += 1
                     else:
                         success_count += 1
                 else:
@@ -491,7 +764,7 @@ if __name__ == "__main__":
                 
                 # 先转换为PDF，再处理
                 print(f"处理单个Office文件: {specific_file}")
-                pdf_file = convert_office_to_pdf(specific_file, tmp_pdf_dir)
+                pdf_file = convert_office_to_pdf(specific_file, tmp_pdf_dir, hash_db, hash_db_path, source_dir)
                 if pdf_file:
                     try:
                         if convert_pdf_to_md(pdf_file, output_dir, image_dir, hash_db, hash_db_path):
@@ -515,7 +788,7 @@ if __name__ == "__main__":
             print(f"保留临时PDF文件: {'是' if keep_tmp else '否'}")
             
             print("开始批量转换文件为Markdown...")
-            batch_convert_files(source_dir, output_dir, image_dir, recursive, tmp_pdf_dir, hash_db_path)
+            batch_convert_files(source_dir, output_dir, image_dir, recursive, tmp_pdf_dir, hash_db_path, keep_tmp)
             
             # 清理临时PDF目录
             if not keep_tmp and os.path.exists(tmp_pdf_dir):
