@@ -32,23 +32,12 @@ pip install -r requirements.txt
 
 ```bash
 # 创建完整conda环境
-conda env create -f environment.yml
+conda env create -f environment-mac.yml
+conda env create -f environment-linux.yml
 
 # 激活环境
-conda activate MinerU
+conda activate simplemarkdown
 ```
-
-2. **最小环境**：只包含必要的依赖，更轻量级
-
-```bash
-# 创建最小conda环境
-conda env create -f environment-minimal.yml
-
-# 激活环境
-conda activate SimpleMarkdown
-```
-
-这两种方法都将安装所有必要的依赖，包括magic_pdf及其所需依赖项。如果遇到问题，建议使用完整环境。
 
 ### Office文件转换依赖
 
