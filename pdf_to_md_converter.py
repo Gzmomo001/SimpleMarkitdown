@@ -218,6 +218,19 @@ def convert_office_to_pdf(office_file, output_dir="tmp_pdf", hash_db=None, hash_
                 found_key = key
                 break
         
+        # 如果没有找到基于路径的键，尝试通过哈希值查找
+        if not found_key:
+            # 检查是否有任何文件具有相同的哈希值
+            for key, value in hash_db.items():
+                if isinstance(value, dict) and value.get('hash') == current_hash:
+                    print(f"找到具有相同哈希值的文件记录: {key}")
+                    found_key = key
+                    break
+                elif isinstance(value, str) and value == current_hash:
+                    print(f"找到具有相同哈希值的文件记录(旧格式): {key}")
+                    found_key = key
+                    break
+        
         if found_key:
             # 检查是否是新格式的哈希值记录（包含状态信息）
             if isinstance(hash_db[found_key], dict):
@@ -407,6 +420,19 @@ def convert_pdf_to_md(pdf_path, output_dir="md", image_dir="md/images", hash_db=
             if key in hash_db:
                 found_key = key
                 break
+        
+        # 如果没有找到基于路径的键，尝试通过哈希值查找
+        if not found_key:
+            # 检查是否有任何文件具有相同的哈希值
+            for key, value in hash_db.items():
+                if isinstance(value, dict) and value.get('hash') == current_hash:
+                    print(f"找到具有相同哈希值的文件记录: {key}")
+                    found_key = key
+                    break
+                elif isinstance(value, str) and value == current_hash:
+                    print(f"找到具有相同哈希值的文件记录(旧格式): {key}")
+                    found_key = key
+                    break
         
         if found_key:
             # 检查是否是新格式的哈希值记录（包含状态信息）
@@ -645,6 +671,9 @@ def batch_convert_files(source_dir="source", output_dir="md", image_dir="md/imag
             if result:
                 # 检查是否是因为文件未更改而跳过
                 if hash_db:
+                    # 计算当前文件的哈希值，用于后续比较
+                    current_hash = calculate_file_hash(pdf_file)
+                    
                     # 检查所有可能的键
                     possible_keys = [
                         pdf_file,
@@ -660,6 +689,19 @@ def batch_convert_files(source_dir="source", output_dir="md", image_dir="md/imag
                         if key in hash_db:
                             found_key = key
                             break
+                    
+                    # 如果没有找到基于路径的键，尝试通过哈希值查找
+                    if not found_key and current_hash is not None:
+                        # 检查是否有任何文件具有相同的哈希值
+                        for key, value in hash_db.items():
+                            if isinstance(value, dict) and value.get('hash') == current_hash:
+                                print(f"找到具有相同哈希值的文件记录: {key}")
+                                found_key = key
+                                break
+                            elif isinstance(value, str) and value == current_hash:
+                                print(f"找到具有相同哈希值的文件记录(旧格式): {key}")
+                                found_key = key
+                                break
                     
                     if found_key:
                         md_file_path = os.path.join(current_output_dir, f"{os.path.basename(pdf_file).split('.')[0]}.md")
@@ -696,6 +738,7 @@ if __name__ == "__main__":
     default_output_dir = os.getenv("OUTPUT_FOLDER", "md").strip()
     default_image_dir = os.path.join(default_output_dir, "images")
     default_tmp_pdf_dir = os.getenv("TMP_PDF_FOLDER", "tmp_pdf").strip()
+    default_recursive = os.getenv("RECURSIVE", "false").strip()
     default_hash_db_path = "./file_hashes.json"
     
     # 解析命令行参数
@@ -705,7 +748,7 @@ if __name__ == "__main__":
     parser.add_argument('--images', type=str, default=default_image_dir, help=f'输出图片的目录 (默认: {default_image_dir})')
     parser.add_argument('--tmp-pdf', type=str, default=default_tmp_pdf_dir, help=f'临时PDF文件目录 (默认: {default_tmp_pdf_dir})')
     parser.add_argument('--hash-db', type=str, default=default_hash_db_path, help=f'哈希值数据库文件路径 (默认: {default_hash_db_path})')
-    parser.add_argument('--recursive', '-r', action='store_true', help='是否递归处理子目录')
+    parser.add_argument('--recursive', '-r', default=default_recursive, action='store_true', help='是否递归处理子目录')
     parser.add_argument('--file', type=str, help='指定要处理的单个文件路径')
     parser.add_argument('--keep-tmp', action='store_true', help='保留临时生成的PDF文件')
     parser.add_argument('--force', '-f', action='store_true', help='强制处理所有文件，忽略哈希值检查')
